@@ -1,0 +1,137 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: "AntiFraude AI \u2014 Plataforma serverless de detecci\xF3n de fraude\
+  \ y phishing con agente IA sobre Amazon Bedrock.\n"
+Resources:
+  AntiFraudeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: antifraude-execution-role
+      PermissionsBoundary: arn:aws:iam::324782098806:policy/hackathon-boundary
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: lambda.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+      - PolicyName: BedrockInvoke
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - bedrock:InvokeModel
+            - bedrock:InvokeModelWithResponseStream
+            Resource: '*'
+  AntiFraudeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: antifraude-agent
+      Handler: index.handler
+      Runtime: nodejs22.x
+      Architectures:
+      - arm64
+      MemorySize: 512
+      Timeout: 120
+      CodeUri: AntiFraudeFunction
+      Role:
+        Fn::GetAtt:
+        - AntiFraudeRole
+        - Arn
+    Metadata:
+      SamResourceId: AntiFraudeFunction
+  Api:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: antifraude-api
+  RootMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId:
+        Ref: Api
+      ResourceId:
+        Fn::GetAtt:
+        - Api
+        - RootResourceId
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        ResponseTransferMode: STREAM
+        TimeoutInMillis: 29000
+        Uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2021-11-15/functions/${AntiFraudeFunction.Arn}/response-streaming-invocations
+  AnalyzeResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId:
+        Ref: Api
+      ParentId:
+        Fn::GetAtt:
+        - Api
+        - RootResourceId
+      PathPart: analyze
+  AnalyzeMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId:
+        Ref: Api
+      ResourceId:
+        Ref: AnalyzeResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        ResponseTransferMode: STREAM
+        TimeoutInMillis: 29000
+        Uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2021-11-15/functions/${AntiFraudeFunction.Arn}/response-streaming-invocations
+  Deployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+    - RootMethod
+    - AnalyzeMethod
+    Properties:
+      RestApiId:
+        Ref: Api
+  AccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/apigateway/antifraude-agent
+      RetentionInDays: 7
+  Stage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId:
+        Ref: Api
+      DeploymentId:
+        Ref: Deployment
+      StageName: prod
+      AccessLogSetting:
+        DestinationArn:
+          Fn::GetAtt:
+          - AccessLogGroup
+          - Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","routeKey":"$context.resourcePath","status":"$context.status","responseLength":"$context.responseLength"}'
+  ApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Fn::GetAtt:
+        - AntiFraudeFunction
+        - Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn:
+        Fn::Sub: arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*
+Outputs:
+  AppUrl:
+    Description: URL de la plataforma anti-fraude
+    Value:
+      Fn::Sub: https://${Api}.execute-api.${AWS::Region}.amazonaws.com/prod/
