@@ -1,0 +1,127 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  AntiFraude AI — Plataforma serverless de detección de fraude y phishing
+  con agente IA sobre Amazon Bedrock.
+
+Resources:
+
+  # ── Execution role para la función anti-fraude ──────────────────────────────
+  # Necesita permisos de Bedrock (InvokeModel) además del log básico.
+  AntiFraudeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: antifraude-execution-role
+      PermissionsBoundary: arn:aws:iam::324782098806:policy/hackathon-boundary
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: BedrockInvoke
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource: "*"
+
+  # ── Función Lambda (streaming) ───────────────────────────────────────────────
+  AntiFraudeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: antifraude-agent
+      Handler: index.handler
+      Runtime: nodejs22.x
+      Architectures: [arm64]
+      MemorySize: 512
+      Timeout: 120
+      CodeUri: src/
+      Role: !GetAtt AntiFraudeRole.Arn
+
+  # ── API Gateway ──────────────────────────────────────────────────────────────
+  Api:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: antifraude-api
+
+  # GET / → sirve el HTML
+  RootMethod:
+    Type: AWS::ApiGateway::Method
+    # checkov:skip=CKV_AWS_59: Demo público en cuenta de hackathon de corta vida.
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !GetAtt Api.RootResourceId
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        ResponseTransferMode: STREAM
+        TimeoutInMillis: 29000
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2021-11-15/functions/${AntiFraudeFunction.Arn}/response-streaming-invocations
+
+  # POST /analyze → análisis del agente
+  AnalyzeResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref Api
+      ParentId: !GetAtt Api.RootResourceId
+      PathPart: analyze
+
+  AnalyzeMethod:
+    Type: AWS::ApiGateway::Method
+    # checkov:skip=CKV_AWS_59: Demo público en cuenta de hackathon de corta vida.
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref AnalyzeResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        ResponseTransferMode: STREAM
+        TimeoutInMillis: 29000
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2021-11-15/functions/${AntiFraudeFunction.Arn}/response-streaming-invocations
+
+  Deployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: [RootMethod, AnalyzeMethod]
+    Properties:
+      RestApiId: !Ref Api
+
+  AccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/apigateway/antifraude-agent
+      RetentionInDays: 7
+
+  Stage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref Api
+      DeploymentId: !Ref Deployment
+      StageName: prod
+      AccessLogSetting:
+        DestinationArn: !GetAtt AccessLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","routeKey":"$context.resourcePath","status":"$context.status","responseLength":"$context.responseLength"}'
+
+  ApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt AntiFraudeFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*
+
+Outputs:
+  AppUrl:
+    Description: "URL de la plataforma anti-fraude"
+    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/prod/"
