@@ -14,7 +14,7 @@ Resources:
       Handler: index.handler
       Runtime: nodejs22.x
       Architectures: [arm64]
-      MemorySize: 256
+      MemorySize: 192
       Timeout: 120
       CodeUri: src/
       Environment:
